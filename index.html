@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<title>NVNE Pure Pixel Rewrite</title>
+<style>
+  :root{--bg:#050505;--panel:#111;--line:#2a2a2a;--text:#f2f2f2;--muted:#aaa;--blue:#2d6cdf;--green:#18b66a;--red:#8b2d2d}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,sans-serif}
+  header{position:sticky;top:0;z-index:5;background:#0b0b0bcc;backdrop-filter:blur(10px);padding:14px 12px;border-bottom:1px solid var(--line);text-align:center}
+  h1{font-size:20px;margin:0 0 5px}
+  #status{font-size:13px;color:#9df2bd;line-height:1.3}
+  .stage{padding:8px 8px 0}
+  .canvasWrap{border:1px solid var(--line);border-radius:16px;overflow:hidden;background:#000;min-height:45vh;display:flex;align-items:center;justify-content:center}
+  canvas{width:100%;height:auto;display:block;background:#000;image-rendering:auto}
+  .controls{padding:10px;display:grid;gap:10px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  button,label.file{width:100%;border:0;border-radius:16px;padding:15px 12px;font-size:16px;font-weight:800;color:#fff;background:var(--blue);text-align:center}
+  button.secondary{background:#292929}
+  button.good{background:var(--green)}
+  button.warn{background:var(--red)}
+  input[type=file]{display:none}
+  .panel{border:1px solid var(--line);border-radius:16px;padding:10px;background:var(--panel)}
+  .panelTitle{font-size:13px;color:var(--muted);margin:0 0 8px;text-align:center}
+  input[type=range]{width:100%}
+  .tiny{font-size:12px;line-height:1.35;color:#bbb;text-align:center;margin:8px 0 0}
+  #zoom{margin-top:8px;border-radius:12px;border:1px solid #333;width:100%;background:#000}
+</style>
+</head>
+<body>
+<header>
+  <h1>NVNE Pure Pixel Rewrite</h1>
+  <div id="status">Upload the exact 1179×2556 screenshot. This version has no polygon/body overlays.</div>
+</header>
+
+<section class="stage">
+  <div class="canvasWrap"><canvas id="c"></canvas></div>
+  <canvas id="zoom" width="520" height="260"></canvas>
+</section>
+
+<section class="controls">
+  <div class="grid2">
+    <label class="file">Upload exact screenshot<input id="upload" type="file" accept="image/*"></label>
+    <button id="apply" class="good">Apply pure pixel</button>
+  </div>
+
+  <div class="panel">
+    <p class="panelTitle">Inspect without adding ghost overlays</p>
+    <div class="grid2">
+      <button id="compare" class="secondary">Hold Before</button>
+      <button id="masks" class="secondary">Mask Preview</button>
+    </div>
+    <div class="grid2">
+      <button id="faceSoft" class="secondary">Face Subtle</button>
+      <button id="faceStrong" class="secondary">Face Strong</button>
+    </div>
+    <p class="tiny">Mask preview is only for inspection. Final output is pixel-edited only, with no blue guide skeleton and no extra body drawn.</p>
+  </div>
+
+  <div class="panel">
+    <p class="panelTitle">Fine-tune face danger zone</p>
+    <label>Face blend <span id="faceVal">62%</span></label>
+    <input id="faceBlend" type="range" min="0" max="100" value="62">
+    <label>Eye blue softness <span id="eyeVal">42%</span></label>
+    <input id="eyeBlue" type="range" min="0" max="100" value="42">
+    <label>Beanie texture <span id="beanVal">58%</span></label>
+    <input id="beanieTex" type="range" min="0" max="100" value="58">
+  </div>
+
+  <div class="grid2">
+    <button id="download">Download PNG</button>
+    <button id="reset" class="warn">Reset</button>
+  </div>
+</section>
+
+<script>
+const EXPECT_W = 1179, EXPECT_H = 2556;
+const c = document.getElementById("c");
+const ctx = c.getContext("2d", {willReadFrequently:true});
+const z = document.getElementById("zoom");
+const ztx = z.getContext("2d", {willReadFrequently:true});
+const statusEl = document.getElementById("status");
+
+let img = new Image();
+let loaded = false;
+let originalData = null;
+let mode = "final";
+let faceStrength = 0.62;
+
+const sliders = ["faceBlend","eyeBlue","beanieTex"];
+for (const id of sliders) document.getElementById(id).addEventListener("input", () => {
+  document.getElementById("faceVal").textContent = document.getElementById("faceBlend").value + "%";
+  document.getElementById("eyeVal").textContent = document.getElementById("eyeBlue").value + "%";
+  document.getElementById("beanVal").textContent = document.getElementById("beanieTex").value + "%";
+  if (loaded) applyPurePixel();
+});
+
+document.getElementById("upload").addEventListener("change", e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  img.onload = () => {
+    c.width = img.width; c.height = img.height;
+    ctx.drawImage(img,0,0);
+    loaded = true;
+    originalData = ctx.getImageData(0,0,c.width,c.height);
+    if (img.width !== EXPECT_W || img.height !== EXPECT_H) {
+      statusEl.textContent = `Wrong size: ${img.width}×${img.height}. Use the exact ${EXPECT_W}×${EXPECT_H} screenshot or masks will not line up.`;
+      statusEl.style.color = "#ffb3b3";
+    } else {
+      statusEl.textContent = "Exact size confirmed. Ready.";
+      statusEl.style.color = "#9df2bd";
+    }
+    drawFaceZoom();
+  };
+  img.src = url;
+});
+
+document.getElementById("apply").onclick = () => { mode="final"; applyPurePixel(); };
+document.getElementById("masks").onclick = () => { mode = mode==="mask" ? "final" : "mask"; applyPurePixel(); };
+document.getElementById("reset").onclick = () => { if(!loaded)return; ctx.putImageData(originalData,0,0); drawFaceZoom(); statusEl.textContent="Reset to original."; };
+document.getElementById("faceSoft").onclick = () => { document.getElementById("faceBlend").value=42; faceStrength=.42; applyPurePixel(); };
+document.getElementById("faceStrong").onclick = () => { document.getElementById("faceBlend").value=78; faceStrength=.78; applyPurePixel(); };
+document.getElementById("compare").onpointerdown = () => { if(loaded) {ctx.putImageData(originalData,0,0); drawFaceZoom();} };
+document.getElementById("compare").onpointerup = () => { if(loaded) applyPurePixel(); };
+document.getElementById("compare").onpointercancel = () => { if(loaded) applyPurePixel(); };
+document.getElementById("download").onclick = () => {
+  if(!loaded)return;
+  mode="final"; applyPurePixel();
+  const a=document.createElement("a");
+  a.download="nvne_pure_pixel.png";
+  a.href=c.toDataURL("image/png");
+  a.click();
+};
+
+function idx(x,y,w){ return (y*w+x)*4; }
+function clamp(v){ return Math.max(0, Math.min(255, v)); }
+function mix(a,b,t){ return a*(1-t)+b*t; }
+
+function ellipse(x,y,cx,cy,rx,ry,rot=0){
+  const s=Math.sin(rot), co=Math.cos(rot);
+  const dx=x-cx, dy=y-cy;
+  const xr=dx*co+dy*s;
+  const yr=-dx*s+dy*co;
+  return (xr*xr)/(rx*rx)+(yr*yr)/(ry*ry) <= 1;
+}
+function inPoly(x,y,pts){
+  let inside=false;
+  for(let i=0,j=pts.length-1;i<pts.length;j=i++){
+    const xi=pts[i][0], yi=pts[i][1], xj=pts[j][0], yj=pts[j][1];
+    const intersect=((yi>y)!==(yj>y)) && (x < (xj-xi)*(y-yi)/(yj-yi)+xi);
+    if(intersect) inside=!inside;
+  }
+  return inside;
+}
+
+// Locked masks for the exact 1179×2556 iPhone screenshot.
+// These are deliberately conservative to avoid ghost body / background edits.
+function maskAt(x,y){
+  const head = ellipse(x,y,300,1322,138,92,-0.10);
+  const face = ellipse(x,y,294,1338,92,62,-0.08);
+  const eyeL = ellipse(x,y,263,1328,25,18,-0.05);
+  const eyeR = ellipse(x,y,321,1326,24,17,-0.04);
+  const goggles = ellipse(x,y,258,1328,49,38,-0.10) || ellipse(x,y,326,1326,49,38,-0.07) || inPoly(x,y,[[248,1305],[340,1304],[355,1329],[334,1355],[254,1357],[232,1329]]);
+  const beanie = inPoly(x,y,[[182,1262],[230,1219],[312,1206],[395,1232],[433,1287],[410,1321],[325,1312],[254,1317],[178,1303]]);
+  const hair = inPoly(x,y,[[184,1302],[250,1308],[330,1301],[390,1312],[374,1342],[315,1334],[242,1340],[181,1330]]);
+  const torso = inPoly(x,y,[[215,1425],[335,1432],[393,1570],[335,1715],[235,1710],[175,1570]]);
+  const armL = inPoly(x,y,[[178,1358],[125,1415],[95,1505],[130,1528],[178,1448],[218,1394]]);
+  const armR = inPoly(x,y,[[350,1400],[438,1495],[414,1530],[330,1455]]);
+  const gloveL = ellipse(x,y,108,1522,42,55,-0.15);
+  const gloveR = ellipse(x,y,424,1510,43,40,0.1);
+  const legL = inPoly(x,y,[[245,1678],[190,1828],[86,1788],[205,1630]]);
+  const legR = inPoly(x,y,[[325,1675],[470,1812],[398,1860],[280,1700]]);
+  const shoeL = ellipse(x,y,110,1791,55,24,-0.16);
+  const shoeR = ellipse(x,y,410,1839,55,25,0.22);
+
+  if(eyeL) return "eyeL";
+  if(eyeR) return "eyeR";
+  if(goggles) return "goggles";
+  if(beanie) return "beanie";
+  if(hair) return "hair";
+  if(face || head) return "skin";
+  if(gloveL || gloveR) return "glove";
+  if(torso || armL || armR || legL || legR || shoeL || shoeR) return "clothes";
+  return "";
+}
+
+function luma(r,g,b){ return 0.2126*r+0.7152*g+0.0722*b; }
+
+function applyPurePixel(){
+  if(!loaded)return;
+  const w=c.width,h=c.height;
+  if (w !== EXPECT_W || h !== EXPECT_H) {
+    statusEl.textContent = `Blocked: wrong size ${w}×${h}. This locked version only supports ${EXPECT_W}×${EXPECT_H}.`;
+    statusEl.style.color = "#ffb3b3";
+    ctx.putImageData(originalData,0,0);
+    return;
+  }
+
+  const src = new Uint8ClampedArray(originalData.data);
+  const out = new Uint8ClampedArray(src);
+  const faceBlend = Number(document.getElementById("faceBlend").value)/100;
+  const eyeBlue = Number(document.getElementById("eyeBlue").value)/100;
+  const beanTex = Number(document.getElementById("beanieTex").value)/100;
+
+  // Main pass. No canvas shapes. Every change is per-pixel.
+  for(let y=1180;y<1875;y++){
+    for(let x=70;x<475;x++){
+      const m=maskAt(x,y);
+      if(!m) continue;
+      const p=idx(x,y,w);
+      let r=src[p], g=src[p+1], b=src[p+2], a=src[p+3];
+      const Y=luma(r,g,b);
+
+      if(mode==="mask"){
+        const colors = {
+          eyeL:[80,180,255], eyeR:[80,180,255], goggles:[255,180,60],
+          beanie:[120,80,255], hair:[120,70,20], skin:[255,190,120],
+          glove:[180,180,180], clothes:[40,90,200]
+        };
+        const col=colors[m];
+        out[p]=mix(r,col[0],0.52); out[p+1]=mix(g,col[1],0.52); out[p+2]=mix(b,col[2],0.52); out[p+3]=a;
+        continue;
+      }
+
+      if(m==="beanie"){
+        // Near-black fabric that keeps scene luminance and uses subtle noise, not drawn ribs.
+        const noise = ((x*17 + y*31) % 23 - 11) * beanTex;
+        const target = Math.max(10, Math.min(44, Y*0.20 + noise));
+        out[p]=clamp(mix(r,target*0.72,0.86));
+        out[p+1]=clamp(mix(g,target*0.75,0.86));
+        out[p+2]=clamp(mix(b,target*0.88,0.86));
+      }
+
+      if(m==="hair"){
+        // Keep hair as broken dark brown edge under beanie.
+        const target = Math.max(22, Y*0.28);
+        out[p]=clamp(mix(r,target*1.10,0.42));
+        out[p+1]=clamp(mix(g,target*0.76,0.42));
+        out[p+2]=clamp(mix(b,target*0.48,0.42));
+      }
+
+      if(m==="skin"){
+        // Very conservative warm skin smoothing, not a flat fill.
+        out[p]=clamp(mix(r, r*1.02 + 4, 0.12));
+        out[p+1]=clamp(mix(g, g*0.98 + 2, 0.10));
+        out[p+2]=clamp(mix(b, b*0.94, 0.10));
+      }
+
+      if(m==="goggles"){
+        // Conservative danger-zone: dim goggles, bring in local skin warmth, avoid giant painted eyes.
+        // This does NOT pretend to know hidden pixels; it softens/rebuilds enough to test.
+        const targetR = Y*1.20 + 22;
+        const targetG = Y*0.86 + 16;
+        const targetB = Y*0.50 + 8;
+        out[p]=clamp(mix(r,targetR,faceBlend));
+        out[p+1]=clamp(mix(g,targetG,faceBlend));
+        out[p+2]=clamp(mix(b,targetB,faceBlend));
+      }
+
+      if(m==="eyeL" || m==="eyeR"){
+        // Rebuild Raz-like eye: keep soft whites, only blue iris area is colored.
+        const cx = m==="eyeL" ? 263 : 321;
+        const cy = m==="eyeL" ? 1328 : 1326;
+        const dx=x-cx, dy=y-cy;
+        const iris = ellipse(x,y,cx-4,cy+3,9,10,-0.05); // slight down-left bias
+        const pupil = ellipse(x,y,cx-5,cy+4,3.2,4.2,-0.05);
+        const lid = dy < -9;
+
+        // eye white, lighting-aware
+        let tw = 205 + Y*0.18;
+        out[p]=clamp(mix(r,tw,0.60*faceBlend));
+        out[p+1]=clamp(mix(g,tw*0.98,0.60*faceBlend));
+        out[p+2]=clamp(mix(b,tw*0.90,0.60*faceBlend));
+
+        if(iris){
+          const blueR = 72 + Y*0.08;
+          const blueG = 132 + Y*0.14;
+          const blueB = 162 + Y*0.18;
+          out[p]=clamp(mix(out[p],blueR,0.55*eyeBlue+0.18));
+          out[p+1]=clamp(mix(out[p+1],blueG,0.55*eyeBlue+0.18));
+          out[p+2]=clamp(mix(out[p+2],blueB,0.55*eyeBlue+0.18));
+        }
+        if(pupil){
+          out[p]=clamp(mix(out[p],18,0.82));
+          out[p+1]=clamp(mix(out[p+1],28,0.82));
+          out[p+2]=clamp(mix(out[p+2],32,0.82));
+        }
+        if(lid){
+          out[p]=clamp(out[p]*0.78);
+          out[p+1]=clamp(out[p+1]*0.78);
+          out[p+2]=clamp(out[p+2]*0.78);
+        }
+      }
+
+      if(m==="clothes"){
+        // Dark hoodie/pants, preserve folds and blue undertone.
+        out[p]=clamp(mix(r, Y*0.12+8, 0.38));
+        out[p+1]=clamp(mix(g, Y*0.14+12, 0.38));
+        out[p+2]=clamp(mix(b, Y*0.25+30, 0.38));
+      }
+
+      if(m==="glove"){
+        // Dark gray-lit gloves, not pure black.
+        out[p]=clamp(mix(r, Y*0.20+18, 0.62));
+        out[p+1]=clamp(mix(g, Y*0.20+18, 0.62));
+        out[p+2]=clamp(mix(b, Y*0.22+22, 0.62));
+      }
+    }
+  }
+
+  // Tiny scene-tint pass on edited areas so colors don't look pasted.
+  for(let y=1180;y<1875;y++){
+    for(let x=70;x<475;x++){
+      const m=maskAt(x,y);
+      if(!m || mode==="mask") continue;
+      const p=idx(x,y,w);
+      const leftGreen = Math.max(0, 1 - x/500) * 3;
+      const redAmbient = Math.max(0, (x-250)/250) * 3;
+      out[p]=clamp(out[p] + redAmbient);
+      out[p+1]=clamp(out[p+1] + leftGreen);
+    }
+  }
+
+  ctx.putImageData(new ImageData(out,w,h),0,0);
+  statusEl.textContent = mode==="mask" ? "Mask preview only. Tap Mask Preview again for final." : "Pure pixel final applied. No polygon/body overlays.";
+  statusEl.style.color = "#9df2bd";
+  drawFaceZoom();
+}
+
+function drawFaceZoom(){
+  if(!loaded)return;
+  ztx.clearRect(0,0,z.width,z.height);
+  // Crop face danger zone
+  const sx=165, sy=1195, sw=285, sh=210;
+  ztx.imageSmoothingEnabled = false;
+  ztx.drawImage(c, sx, sy, sw, sh, 0, 0, z.width, z.height);
+  ztx.strokeStyle="rgba(255,255,255,.35)";
+  ztx.lineWidth=2;
+  ztx.strokeRect(1,1,z.width-2,z.height-2);
+}
+</script>
+</body>
+</html>
